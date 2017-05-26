@@ -1,4 +1,14 @@
 #include <Wire.h>
+#define Throttle_Max 255
+#define Throttle_Min 0
+#define Throttle_InI 5
+enum {
+  head1, head2, head3,
+  dataSize, dataType,
+  Roll, Pitch, Yaw, Throtte, Aux,
+  crc, PackSize
+};
+int Throttle;
 int MPU_Address = 0x68;
 double acX, acY, acZ, gyX, gyY, gyZ;
 float baseAcX, baseAcY, baseAcZ;
@@ -10,6 +20,11 @@ float complementX, complementY, complementZ;
 unsigned long tNow;
 unsigned long tPrev;
 unsigned long dT;
+int motorA = 5;
+int motorB = 6;
+int motorC = 9;
+int motorD = 10;
+uint8_t msp[PackSize];
 void initMPU()
 {
   Wire.begin();
@@ -22,6 +37,7 @@ void setup()
 {
   initMPU();
   Serial.begin(115200);
+  Serial1.begin(115200);
   calibAccelGyro();
   initTime();
 }
@@ -32,6 +48,7 @@ void loop()
   getAcc();
   getGyro();
   compementary();
+  initMotorSpeed();
   static int cnt;
   cnt++;
   if (cnt % 2 == 0)
@@ -131,8 +148,35 @@ void compementary()
   tmp_angleX = complementX + gyroX*dT;
   tmp_angleY = complementY + gyroY*dT;
   tmp_angleZ = complementZ + gyroZ*dT;
-    complementX = 0.96*tmp_angleX + 0.04*accelAngX;
-    complementY = 0.96*tmp_angleY + 0.04*accelAngY;
-    complementZ = tmp_angleZ;
+  complementX = 0.96*tmp_angleX + 0.04*accelAngX;
+  complementY = 0.96*tmp_angleY + 0.04*accelAngY;
+  complementZ = tmp_angleZ;
 }
+void initMotorSpeed()
+{
+  analogWrite(motorA,Throttle);
+  analogWrite(motorB,Throttle);
+  analogWrite(motorC,Throttle);
+  analogWrite(motorD,Throttle);
+  CheckMsp();
+}
+void CheckMsp()
+{
+  static uint32_t cnt; //unsigned int
+  while (Serial1.available() > 0)
+     {
+    uint8_t mspData = Serial1.read();//usigned char
+    if (mspData == '$')
+      cnt = head1;
+    else cnt++;
+    msp[cnt] = mspData;
+    if (cnt == crc)
+      {
+      if (msp[dataType] == 150)
+         Throttle = msp[Throtte];
+      }
+    }
+  
+}
+
 
