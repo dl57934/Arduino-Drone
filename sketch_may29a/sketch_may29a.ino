@@ -10,14 +10,21 @@ float  yaw_prev_angle=0.0, yaw_kp=1, yaw_ki=0, yaw_kd=0, yaw_iterm;
 float gyro_x, gyro_y, gyro_z;
 float gyro_xz, gyro_yz;
 unsigned long Tnow, Tprev;
+enum
+{
+  head1,head2,head3,
+  sizex,type,roll,pitch,yaw,thro,aux,crc
+};
 void setup()
 {
-  SetI2c();
+  
   Serial.begin(115200);
   Serial1.begin(115200);
+  SetI2c();
   getInitavg();
   InitDt();
   InitYPR();
+  InitSpeed();
   /* add setup code here */
 }
 
@@ -30,6 +37,9 @@ void loop()
   complementary();
   calcYPTtoStdPID();
   calcMotorSpeed();
+  checkMspPacket();
+  InitSpeed();
+  updateSpeed();
   static int cnt;
   cnt++;
   if (cnt % 2 == 0)
@@ -42,14 +52,14 @@ void getAngle()
   Wire.beginTransmission(MPU);
   Wire.write(0x3B);
   Wire.endTransmission(false);
-  Wire.requestFrom(MPU, 6);
+  Wire.requestFrom(MPU, 6,true);
   accelX = Wire.read() << 8 | Wire.read();
   accelY = Wire.read() << 8 | Wire.read();
   accelZ = Wire.read() << 8 | Wire.read();
   Wire.beginTransmission(MPU);
   Wire.write(0x43);
   Wire.endTransmission(false);
-  Wire.requestFrom(MPU, 6);
+  Wire.requestFrom(MPU, 6,true);
   gyroX = Wire.read() << 8 | Wire.read();
   gyroY = Wire.read() << 8 | Wire.read();
   gyroZ = Wire.read() << 8 | Wire.read();
@@ -58,8 +68,8 @@ float baseAcX, baseAcY, baseAcZ;
 float baseGyX, baseGyY, baseGyZ;
 void getInitavg()
 {
-  float sumAcX, sumAcY, sumAcZ;
-  float sumGyX, sumGyY, sumGyZ;
+  float sumAcX=0, sumAcY=0, sumAcZ=0;
+  float sumGyX=0, sumGyY=0, sumGyZ=0;
   for (int i = 0; i < 10; i++)
   {
     getAngle();
@@ -67,7 +77,7 @@ void getInitavg()
     sumGyX += gyroX; sumGyY += gyroY; sumGyZ += gyroZ;
   }
   baseAcX = sumAcX / 10;    baseAcY = sumAcY / 10;    baseAcZ = sumAcZ / 10;
-  baseGyX = baseGyX / 10;   baseGyY = baseGyY / 10;   baseGyZ = baseGyZ / 10;
+  baseGyX = sumGyX / 10;   baseGyY = sumGyY / 10;   baseGyZ = sumGyZ / 10;
 }
 void InitDt()
 {
@@ -93,10 +103,9 @@ float finalAccelX, finalAccelY, finalAccelZ;
 float finalGyroX, finalGyroY, finalGyroZ;
 void calAccel()
 {
-
   accel_x = accelX - baseAcX;
   accel_y = accelY - baseAcY;
-  accel_z = accelZ - (16384 - baseAcZ);
+  accel_z = accelZ + (16384 - baseAcZ);
   accel_yz = sqrt(pow(accel_y, 2) + pow(accel_z, 2));
   finalAccelY = atan(-accel_x / accel_yz) * 180 / PI;
   accel_xz = sqrt(pow(accel_x, 2) + pow(accel_z, 2));
@@ -169,14 +178,14 @@ void stdPID(float& setpoint, float& input, float& prev_input, float& kp, float& 
   dterm = -kd*dInput / dT;
   output = pterm + iterm + dterm;
 }
-float throttle = 100;
+float throttle =0;
 float motorA_speed, motorB_speed, motorC_speed, motorD_speed;
 void calcMotorSpeed()
 {
-  motorA_speed = throttle + yaw_output + roll_output + pitch_output;
-  motorB_speed = throttle - yaw_output - roll_output + pitch_output;
-  motorC_speed = throttle + yaw_output - roll_output - pitch_output;
-  motorD_speed = throttle - yaw_output + roll_output - pitch_output;
+  motorA_speed =(throttle==0)?0: throttle + yaw_output + roll_output + pitch_output;
+  motorB_speed = (throttle==0)?0:throttle - yaw_output - roll_output + pitch_output;
+  motorC_speed =(throttle==0) ?0: throttle + yaw_output - roll_output - pitch_output;
+  motorD_speed = (throttle==0)?0: throttle - yaw_output + roll_output - pitch_output;
   if (motorA_speed < 0)
     motorA_speed = 0;
   if (motorA_speed>255)
@@ -204,6 +213,8 @@ void SendDataToProcessing()
   Serial.print(complememtY, 2);
   Serial.print(F(", "));
   Serial.print(complememtZ, 2);
+  Serial.print(F("finalGyroZ"));
+  Serial.print(finalGyroZ, 2);
   Serial.print(F("#PID:"));
   Serial.print(roll_output, 2);
   Serial.print(F(", "));
@@ -219,5 +230,47 @@ void SendDataToProcessing()
   Serial.print(F("#D: "));
   Serial.println(motorD_speed, 2);
   delay(100);
+}
+uint8_t mspPacket[11];
+void checkMspPacket()
+{
+  static uint32_t cnt;
+  
+  if (Serial1.available()>0)
+  {
+    while (Serial1.available()>0)
+    {
+      uint8_t inputdata= Serial1.read();
+      if (inputdata == '$')
+        cnt=head1;
+      else cnt++;
+      mspPacket[cnt] = inputdata;
+      if(cnt == crc)
+      {
+        if (mspPacket[type] == 150)
+        {
+          throttle = mspPacket[thro];
+        }
+      }
+    }
+  }
+}
+int motorA =6;
+int motorB = 10;
+int motorC= 9;
+int motorD = 5;
+void InitSpeed()
+{
+  analogWrite(motorA,0);
+  analogWrite( motorB,0);
+  analogWrite(motorC,0);
+  analogWrite(motorD,0);
+}
+void updateSpeed()
+{
+  analogWrite(motorA,motorA_speed);
+  analogWrite( motorB,motorB_speed);
+  analogWrite(motorC,motorC_speed);
+  analogWrite(motorD,motorD_speed);
 }
 
